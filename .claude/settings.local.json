@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -c \"import platform; print\\(platform.architecture\\(\\)\\)\")",
+      "Bash(python setup.py)",
+      "Bash(curl -s \"http://127.0.0.1:8000/api/anime/search?q=underdog+who+works+hard+and+gets+stronger&limit=5\")",
+      "Bash(python -m json.tool)"
+    ]
+  }
+}
