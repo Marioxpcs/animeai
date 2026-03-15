@@ -60,6 +60,7 @@ class RecommendationCard(BaseModel):
     similarity_score: float
     explanation:      str
     match_reasons:    list[str]
+    match_confidence: float = 1.0
 
 
 class RatingRequest(BaseModel):
@@ -103,6 +104,7 @@ def result_to_card(result: RecommendationResult) -> RecommendationCard:
         similarity_score=result.similarity_score,
         explanation=result.explanation,
         match_reasons=result.match_reasons,
+        match_confidence=result.match_confidence,
     )
 
 

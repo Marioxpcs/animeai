@@ -35,6 +35,9 @@ class RecommendationResult:
     similarity_score: float
     explanation: str                # Human-readable "why this matches"
     match_reasons: list[str]        # Bullet-point reasons
+    match_confidence: float = 1.0   # 0.0–1.0, how well this actually fits the query
+
+CONFIDENCE_THRESHOLD = 0.5
 
 
 # ─── Step 1: Parse natural language query into structured intent ──────────────
@@ -253,10 +256,10 @@ def generate_explanation(
     recommended: Anime,
     narrative: AnimeNarrative,
     similarity_score: float
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], float]:
     """
     Generate a human-readable explanation for why this anime was recommended.
-    Returns (explanation_paragraph, [bullet_point_reasons])
+    Returns (explanation_paragraph, [bullet_point_reasons], match_confidence)
     """
     themes_str = ", ".join(narrative.themes or [])
     rel_str    = ", ".join(narrative.relationship_types or [])
@@ -277,7 +280,8 @@ Its narrative profile:
 Return JSON:
 {{
   "explanation": <1-2 sentence explanation of why this matches the request>,
-  "reasons": [<3-4 specific bullet-point reasons, each under 15 words>]
+  "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
+  "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
 }}"""
 
     try:
@@ -293,7 +297,11 @@ Return JSON:
             if raw.startswith("json"):
                 raw = raw[4:]
         data = json.loads(raw.strip())
-        return data.get("explanation", ""), data.get("reasons", [])
+        return (
+            data.get("explanation", ""),
+            data.get("reasons", []),
+            float(data.get("match_confidence", 0.7)),
+        )
     except Exception:
         # Fallback explanation from structured data
         explanation = f"Matches your request with {similarity_score:.0%} narrative similarity."
@@ -302,7 +310,7 @@ Return JSON:
             f"Growth type: {narrative.growth_type}",
             f"Tone: {narrative.tone}",
         ]
-        return explanation, reasons
+        return explanation, reasons, 0.7
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -325,20 +333,25 @@ def recommend_from_query(
 
     # Vector search + dedup by series + content filter
     allow_explicit = _query_wants_explicit(query_text)
-    candidates = vector_search(db, query_vector, limit=limit * 3)
+    candidates = vector_search(db, query_vector, limit=limit * 5)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
-    # Generate explanations for top results
+    # Generate explanations and filter by confidence
     results = []
-    for anime, narrative, score in candidates[:limit]:
-        explanation, reasons = generate_explanation(query_text, anime, narrative, score)
+    for anime, narrative, score in candidates:
+        if len(results) >= limit:
+            break
+        explanation, reasons, confidence = generate_explanation(query_text, anime, narrative, score)
+        if confidence < CONFIDENCE_THRESHOLD:
+            continue
         results.append(RecommendationResult(
             anime=anime,
             narrative=narrative,
             similarity_score=score,
             explanation=explanation,
             match_reasons=reasons,
+            match_confidence=confidence,
         ))
 
     return results
@@ -375,20 +388,25 @@ def recommend_from_anime(
 
     # Search (always exclude the source itself)
     excluded = list(set([anime_id] + (exclude_ids or [])))
-    candidates = vector_search(db, source_emb.embedding, exclude_ids=excluded, limit=limit * 3)
+    candidates = vector_search(db, source_emb.embedding, exclude_ids=excluded, limit=limit * 5)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
     results = []
     query_label = f"anime similar to {source_anime.title_romaji}"
-    for anime, narrative, score in candidates[:limit]:
-        explanation, reasons = generate_explanation(query_label, anime, narrative, score)
+    for anime, narrative, score in candidates:
+        if len(results) >= limit:
+            break
+        explanation, reasons, confidence = generate_explanation(query_label, anime, narrative, score)
+        if confidence < CONFIDENCE_THRESHOLD:
+            continue
         results.append(RecommendationResult(
             anime=anime,
             narrative=narrative,
             similarity_score=score,
             explanation=explanation,
             match_reasons=reasons,
+            match_confidence=confidence,
         ))
 
     return results
@@ -450,21 +468,26 @@ def recommend_for_user(
     allow_explicit = len(liked_narratives) > 0 and explicit_count > len(liked_narratives) / 2
 
     # Search, excluding already-watched + dedup by series + content filter
-    candidates = vector_search(db, avg_vector, exclude_ids=watched_ids, limit=limit * 3)
+    candidates = vector_search(db, avg_vector, exclude_ids=watched_ids, limit=limit * 5)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
     results = []
-    for anime, narrative, score in candidates[:limit]:
-        explanation, reasons = generate_explanation(
+    for anime, narrative, score in candidates:
+        if len(results) >= limit:
+            break
+        explanation, reasons, confidence = generate_explanation(
             "anime matching your taste profile", anime, narrative, score
         )
+        if confidence < CONFIDENCE_THRESHOLD:
+            continue
         results.append(RecommendationResult(
             anime=anime,
             narrative=narrative,
             similarity_score=score,
             explanation=explanation,
             match_reasons=reasons,
+            match_confidence=confidence,
         ))
 
     return results
