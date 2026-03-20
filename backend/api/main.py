@@ -38,6 +38,13 @@ app.add_middleware(
 app.include_router(router)
 
 
+@app.on_event("startup")
+def startup_event():
+    """Pre-load the embedding model so the first request isn't slow."""
+    from pipeline.enricher import get_embedding_model
+    get_embedding_model()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "0.1.0"}

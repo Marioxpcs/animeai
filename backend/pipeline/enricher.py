@@ -130,15 +130,17 @@ def extract_narrative(anime: Anime) -> dict | None:
         return None
 
 
-# ─── Sentence-transformers model (loaded once, reused) ───────────────────────
+# ─── Sentence-transformers model (loaded once at import, reused) ──────────────
+from sentence_transformers import SentenceTransformer
+
 _embedding_model = None
 
-def _get_embedding_model():
+def get_embedding_model() -> SentenceTransformer:
     global _embedding_model
     if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
+        console.print("[dim]Loading embedding model: all-mpnet-base-v2 (768d)...[/dim]")
         _embedding_model = SentenceTransformer("all-mpnet-base-v2")
-        console.print("[dim]Loaded embedding model: all-mpnet-base-v2 (768d)[/dim]")
+        console.print("[dim]Embedding model loaded.[/dim]")
     return _embedding_model
 
 
@@ -148,7 +150,7 @@ def generate_embedding(text: str) -> list[float] | None:
     Runs locally — no API key needed.
     """
     try:
-        model = _get_embedding_model()
+        model = get_embedding_model()
         vector = model.encode(text, normalize_embeddings=True)
         return vector.tolist()
     except Exception as e:
