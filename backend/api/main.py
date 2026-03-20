@@ -22,12 +22,10 @@ app = FastAPI(
 
 # Allow the Next.js frontend to call us
 allowed_origins = [
+    "https://animeai-tawny.vercel.app",
     "http://localhost:3000",
     "http://localhost:3001",
 ]
-# Add Vercel production domain if set
-if os.getenv("FRONTEND_URL"):
-    allowed_origins.append(os.getenv("FRONTEND_URL"))
 
 app.add_middleware(
     CORSMiddleware,
