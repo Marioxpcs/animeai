@@ -370,6 +370,8 @@ async def recommend_from_query(
     # Generate query embedding (search_query type for Cohere asymmetric search)
     embedding_text = intent_to_embedding_text(intent, query_text)
     query_vector   = generate_embedding(embedding_text, input_type="search_query")
+    if not query_vector:
+        return []
 
     # Vector search + dedup by series + content filter
     allow_explicit = _query_wants_explicit(query_text)
