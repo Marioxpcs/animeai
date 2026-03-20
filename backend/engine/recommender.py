@@ -367,9 +367,9 @@ async def recommend_from_query(
     # Parse intent
     intent = await parse_nl_query(query_text)
 
-    # Generate query embedding
+    # Generate query embedding (search_query type for Cohere asymmetric search)
     embedding_text = intent_to_embedding_text(intent, query_text)
-    query_vector   = generate_embedding(embedding_text)
+    query_vector   = generate_embedding(embedding_text, input_type="search_query")
 
     # Vector search + dedup by series + content filter
     allow_explicit = _query_wants_explicit(query_text)

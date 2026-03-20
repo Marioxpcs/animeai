@@ -21,9 +21,9 @@ from pgvector.sqlalchemy import Vector
 Base = declarative_base()
 
 # ─── Embedding dimensions ────────────────────────────────────────────────────
-# sentence-transformers/all-mpnet-base-v2 outputs 768 dims.
+# Cohere embed-english-v3.0 outputs 1024 dims.
 # If you switch models, update this constant + re-embed everything.
-EMBEDDING_DIM = 768
+EMBEDDING_DIM = 1024
 
 
 class Anime(Base):

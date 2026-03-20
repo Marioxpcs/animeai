@@ -31,9 +31,10 @@ from rich.panel import Panel
 from sqlalchemy.orm import Session
 from db.database import SessionLocal, init_db
 from db.schema import Anime, AnimeNarrative, AnimeEmbedding
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 console = Console()
 app = typer.Typer()
@@ -130,29 +131,31 @@ def extract_narrative(anime: Anime) -> dict | None:
         return None
 
 
-# ─── Sentence-transformers model (loaded once at import, reused) ──────────────
-from sentence_transformers import SentenceTransformer
+# ─── Cohere embedding client (loaded once, reused) ───────────────────────────
+import cohere
 
-_embedding_model = None
+_cohere_client = None
 
-def get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        console.print("[dim]Loading embedding model: all-mpnet-base-v2 (768d)...[/dim]")
-        _embedding_model = SentenceTransformer("all-mpnet-base-v2")
-        console.print("[dim]Embedding model loaded.[/dim]")
-    return _embedding_model
+def get_cohere_client() -> cohere.Client:
+    global _cohere_client
+    if _cohere_client is None:
+        _cohere_client = cohere.Client(os.getenv("COHERE_API_KEY"))
+    return _cohere_client
 
 
-def generate_embedding(text: str) -> list[float] | None:
+def generate_embedding(text: str, input_type: str = "search_document") -> list[float] | None:
     """
-    Generate a 768-dim vector embedding using sentence-transformers/all-mpnet-base-v2.
-    Runs locally — no API key needed.
+    Generate a 1024-dim vector embedding using Cohere embed-english-v3.0.
+    input_type: "search_document" for indexing, "search_query" for queries.
     """
     try:
-        model = get_embedding_model()
-        vector = model.encode(text, normalize_embeddings=True)
-        return vector.tolist()
+        client = get_cohere_client()
+        response = client.embed(
+            texts=[text],
+            model="embed-english-v3.0",
+            input_type=input_type,
+        )
+        return response.embeddings[0]
     except Exception as e:
         console.print(f"[red]Embedding error: {e}[/red]")
         return None
