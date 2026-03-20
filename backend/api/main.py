@@ -10,11 +10,22 @@ API docs auto-generated at:
 """
 
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
+from pipeline.enricher import get_embedding_model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-load embedding model at startup
+    get_embedding_model()
+    yield
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title="AnimeAI API",
     description="Semantic anime recommendation engine",
     version="0.1.0",
@@ -36,13 +47,6 @@ app.add_middleware(
 )
 
 app.include_router(router)
-
-
-@app.on_event("startup")
-def startup_event():
-    """Pre-load the embedding model so the first request isn't slow."""
-    from pipeline.enricher import get_embedding_model
-    get_embedding_model()
 
 
 @app.get("/health")
