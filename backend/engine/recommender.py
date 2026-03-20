@@ -13,6 +13,7 @@ All three return a list of RecommendationResult objects with explanations.
 import os
 import re
 import json
+import asyncio
 import anthropic
 from dataclasses import dataclass
 from sqlalchemy.orm import Session
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 # ─── Data Classes ─────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ into a structured JSON intent object that can be used to search for anime.
 Extract as much signal as possible from the query. Return ONLY valid JSON.
 """
 
-def parse_nl_query(query_text: str) -> dict:
+async def parse_nl_query(query_text: str) -> dict:
     """
     Convert free-form user text into a structured search intent.
 
@@ -79,7 +80,7 @@ Return this JSON structure:
 }}"""
 
     try:
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=500,
             system=QUERY_PARSE_SYSTEM,
@@ -241,7 +242,7 @@ def _filter_by_content(
     ]
 
 
-# ─── Step 4: Generate explanation ────────────────────────────────────────────
+# ─── Step 4: Generate explanation (async) ────────────────────────────────────
 
 EXPLANATION_SYSTEM = """
 You are an anime recommendation assistant. Given a user's query or a source anime,
@@ -251,7 +252,7 @@ Be specific — reference actual narrative elements, not generic praise.
 Return a JSON object only.
 """
 
-def generate_explanation(
+async def generate_explanation(
     query_or_source: str,
     recommended: Anime,
     narrative: AnimeNarrative,
@@ -285,7 +286,7 @@ Return JSON:
 }}"""
 
     try:
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=300,
             system=EXPLANATION_SYSTEM,
@@ -313,36 +314,29 @@ Return JSON:
         return explanation, reasons, 0.7
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+# ─── Helper: parallel explanation generation with confidence filter ───────────
 
-def recommend_from_query(
-    db: Session,
-    query_text: str,
-    limit: int = 8
+async def _generate_explanations_parallel(
+    query_label: str,
+    candidates: list[tuple[Anime, AnimeNarrative, float]],
+    limit: int,
 ) -> list[RecommendationResult]:
     """
-    Main recommendation function for natural language queries.
-    "I want an anime where the MC works hard and gradually gets stronger..."
+    Fire all explanation calls in parallel via asyncio.gather(),
+    then filter by confidence and cap at limit.
     """
-    # Parse intent
-    intent = parse_nl_query(query_text)
+    pool = candidates[:limit + 5]
 
-    # Generate query embedding
-    embedding_text = intent_to_embedding_text(intent, query_text)
-    query_vector   = generate_embedding(embedding_text)
+    # Launch all explanation calls simultaneously
+    tasks = [
+        generate_explanation(query_label, anime, narrative, score)
+        for anime, narrative, score in pool
+    ]
+    explanations = await asyncio.gather(*tasks)
 
-    # Vector search + dedup by series + content filter
-    allow_explicit = _query_wants_explicit(query_text)
-    candidates = vector_search(db, query_vector, limit=limit * 5)
-    candidates = deduplicate_by_series(candidates, db=db)
-    candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
-
-    # Generate explanations and filter by confidence
+    # Zip results back with candidates, filter by confidence
     results = []
-    for anime, narrative, score in candidates:
-        if len(results) >= limit:
-            break
-        explanation, reasons, confidence = generate_explanation(query_text, anime, narrative, score)
+    for (anime, narrative, score), (explanation, reasons, confidence) in zip(pool, explanations):
         if confidence < CONFIDENCE_THRESHOLD:
             continue
         results.append(RecommendationResult(
@@ -353,11 +347,41 @@ def recommend_from_query(
             match_reasons=reasons,
             match_confidence=confidence,
         ))
+        if len(results) >= limit:
+            break
 
     return results
 
 
-def recommend_from_anime(
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+async def recommend_from_query(
+    db: Session,
+    query_text: str,
+    limit: int = 8
+) -> list[RecommendationResult]:
+    """
+    Main recommendation function for natural language queries.
+    "I want an anime where the MC works hard and gradually gets stronger..."
+    """
+    # Parse intent
+    intent = await parse_nl_query(query_text)
+
+    # Generate query embedding
+    embedding_text = intent_to_embedding_text(intent, query_text)
+    query_vector   = generate_embedding(embedding_text)
+
+    # Vector search + dedup by series + content filter
+    allow_explicit = _query_wants_explicit(query_text)
+    candidates = vector_search(db, query_vector, limit=limit * 3)
+    candidates = deduplicate_by_series(candidates, db=db)
+    candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
+
+    # Generate explanations in parallel
+    return await _generate_explanations_parallel(query_text, candidates, limit)
+
+
+async def recommend_from_anime(
     db: Session,
     anime_id: int,
     exclude_ids: list[int] = None,
@@ -388,31 +412,16 @@ def recommend_from_anime(
 
     # Search (always exclude the source itself)
     excluded = list(set([anime_id] + (exclude_ids or [])))
-    candidates = vector_search(db, source_emb.embedding, exclude_ids=excluded, limit=limit * 5)
+    candidates = vector_search(db, source_emb.embedding, exclude_ids=excluded, limit=limit * 3)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
-    results = []
+    # Generate explanations in parallel
     query_label = f"anime similar to {source_anime.title_romaji}"
-    for anime, narrative, score in candidates:
-        if len(results) >= limit:
-            break
-        explanation, reasons, confidence = generate_explanation(query_label, anime, narrative, score)
-        if confidence < CONFIDENCE_THRESHOLD:
-            continue
-        results.append(RecommendationResult(
-            anime=anime,
-            narrative=narrative,
-            similarity_score=score,
-            explanation=explanation,
-            match_reasons=reasons,
-            match_confidence=confidence,
-        ))
-
-    return results
+    return await _generate_explanations_parallel(query_label, candidates, limit)
 
 
-def recommend_for_user(
+async def recommend_for_user(
     db: Session,
     user_id: str,
     limit: int = 10
@@ -468,26 +477,9 @@ def recommend_for_user(
     allow_explicit = len(liked_narratives) > 0 and explicit_count > len(liked_narratives) / 2
 
     # Search, excluding already-watched + dedup by series + content filter
-    candidates = vector_search(db, avg_vector, exclude_ids=watched_ids, limit=limit * 5)
+    candidates = vector_search(db, avg_vector, exclude_ids=watched_ids, limit=limit * 3)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
-    results = []
-    for anime, narrative, score in candidates:
-        if len(results) >= limit:
-            break
-        explanation, reasons, confidence = generate_explanation(
-            "anime matching your taste profile", anime, narrative, score
-        )
-        if confidence < CONFIDENCE_THRESHOLD:
-            continue
-        results.append(RecommendationResult(
-            anime=anime,
-            narrative=narrative,
-            similarity_score=score,
-            explanation=explanation,
-            match_reasons=reasons,
-            match_confidence=confidence,
-        ))
-
-    return results
+    # Generate explanations in parallel
+    return await _generate_explanations_parallel("anime matching your taste profile", candidates, limit)

@@ -111,7 +111,7 @@ def result_to_card(result: RecommendationResult) -> RecommendationCard:
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/anime/search", response_model=list[RecommendationCard])
-def search_anime(
+async def search_anime(
     q:     str = Query(..., min_length=3, description="Natural language query"),
     limit: int = Query(20, ge=1, le=50),
     db:    Session = Depends(get_db)
@@ -120,12 +120,12 @@ def search_anime(
     Natural language anime discovery.
     Example: GET /api/anime/search?q=underdog+who+works+hard+to+get+stronger
     """
-    results = recommend_from_query(db, q, limit=limit)
+    results = await recommend_from_query(db, q, limit=limit)
     return [result_to_card(r) for r in results]
 
 
 @router.get("/anime/{anime_id}/similar", response_model=list[RecommendationCard])
-def get_similar(
+async def get_similar(
     anime_id:    int,
     exclude_ids: str  = Query("", description="Comma-separated anime IDs to exclude"),
     limit:       int  = Query(20, ge=1, le=50),
@@ -136,7 +136,7 @@ def get_similar(
     Example: GET /api/anime/21/similar  (21 = One Piece on AniList)
     """
     excluded = [int(x) for x in exclude_ids.split(",") if x.strip().isdigit()]
-    results  = recommend_from_anime(db, anime_id, exclude_ids=excluded, limit=limit)
+    results  = await recommend_from_anime(db, anime_id, exclude_ids=excluded, limit=limit)
     return [result_to_card(r) for r in results]
 
 
@@ -208,7 +208,7 @@ def submit_rating(body: RatingRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/users/{user_id}/feed", response_model=list[RecommendationCard])
-def get_user_feed(
+async def get_user_feed(
     user_id: str,
     limit:   int = Query(10, ge=1, le=30),
     db:      Session = Depends(get_db)
@@ -217,7 +217,7 @@ def get_user_feed(
     Personalized home feed based on user's liked anime.
     Falls back to popular anime if no ratings yet.
     """
-    results = recommend_for_user(db, user_id, limit=limit)
+    results = await recommend_for_user(db, user_id, limit=limit)
 
     if not results:
         # Cold-start fallback: return top-rated enriched anime
