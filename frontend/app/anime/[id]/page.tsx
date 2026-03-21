@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import posthog from "posthog-js";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -61,12 +62,25 @@ export default function AnimeDetailPage() {
     setLoadingSimilar(true);
 
     getAnime(id)
-      .then(setAnime)
+      .then((data) => {
+        setAnime(data);
+        posthog.capture("anime_detail_viewed", {
+          anime_id: id,
+          anime_title: data.title_english || data.title,
+          source: document.referrer.includes("/anime/") ? "similar" : "search",
+        });
+      })
       .catch(() => setError("Failed to load anime details."))
       .finally(() => setLoadingAnime(false));
 
     getSimilarAnime(id, 6)
-      .then(setSimilar)
+      .then((data) => {
+        setSimilar(data);
+        posthog.capture("similar_anime_loaded", {
+          anime_id: id,
+          result_count: data.length,
+        });
+      })
       .catch(() => {})
       .finally(() => setLoadingSimilar(false));
   }, [id]);

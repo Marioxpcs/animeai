@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import posthog from "posthog-js";
 import { Search, Loader2, Sparkles } from "lucide-react";
 import { searchAnime } from "@/lib/api";
 import { AnimeResultCard } from "@/components/anime-card";
@@ -17,16 +18,31 @@ export default function Home() {
     e.preventDefault();
     if (!query.trim() || loading) return;
 
+    const trimmed = query.trim();
     setLoading(true);
     setError(null);
     setSearched(true);
 
+    posthog.capture("search_submitted", {
+      query: trimmed,
+      query_length: trimmed.length,
+    });
+
     try {
-      const data = await searchAnime(query.trim(), 20);
+      const data = await searchAnime(trimmed, 20);
       setResults(data);
-    } catch {
-      setError("Failed to fetch recommendations. Is the backend running?");
+      posthog.capture("search_results_viewed", {
+        query: trimmed,
+        result_count: data.length,
+      });
+    } catch (err) {
+      const msg = "Failed to fetch recommendations. Is the backend running?";
+      setError(msg);
       setResults([]);
+      posthog.capture("search_failed", {
+        query: trimmed,
+        error: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setLoading(false);
     }
