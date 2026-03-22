@@ -79,7 +79,7 @@ export default function Home() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Describe the anime you're looking for..."
-              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] py-3.5 pl-11 pr-4 text-[15px] text-white/90 placeholder-white/25 outline-none transition-all focus:border-white/[0.15] focus:bg-white/[0.04] focus:ring-1 focus:ring-white/[0.08]"
+              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] py-3.5 pl-11 pr-4 text-[15px] text-white/90 placeholder-white/25 outline-none transition-all focus:border-indigo-500/30 focus:bg-white/[0.04] focus:ring-1 focus:ring-indigo-500/20"
               autoFocus
             />
             {loading && (
@@ -99,7 +99,7 @@ export default function Home() {
               <button
                 key={example}
                 onClick={() => setQuery(example)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs text-white/35 transition-all hover:border-white/[0.1] hover:bg-white/[0.04] hover:text-white/50"
+                className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs text-white/35 transition-all hover:border-indigo-500/20 hover:bg-indigo-500/5 hover:text-indigo-300/70"
               >
                 <Sparkles className="h-3 w-3" />
                 {example}

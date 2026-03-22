@@ -31,8 +31,8 @@ function NarrativeTag({
 }) {
   if (!value) return null;
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-white/6 bg-white/2 px-3 py-2">
-      <Icon className="h-3.5 w-3.5 text-white/25" />
+    <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
+      <Icon className="h-3.5 w-3.5 text-indigo-400/50" />
       <div>
         <p className="text-[10px] uppercase tracking-wider text-white/25">
           {label}
@@ -168,7 +168,7 @@ export default function AnimeDetailPage() {
                 {anime.genres.map((g) => (
                   <span
                     key={g}
-                    className="rounded-md border border-white/6 bg-white/3 px-2 py-0.5 text-xs text-white/40"
+                    className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-0.5 text-xs text-white/40"
                   >
                     {g}
                   </span>
@@ -214,7 +214,7 @@ export default function AnimeDetailPage() {
                 {n.themes.map((t) => (
                   <span
                     key={t}
-                    className="rounded-full border border-emerald-500/15 bg-emerald-500/5 px-2.5 py-0.5 text-xs text-emerald-400/70"
+                    className="rounded-full border border-indigo-500/15 bg-indigo-500/5 px-2.5 py-0.5 text-xs text-indigo-400/70"
                   >
                     {t.replace(/_/g, " ")}
                   </span>
@@ -244,7 +244,7 @@ export default function AnimeDetailPage() {
 
           {/* Motivation */}
           {n.protagonist_motivation && (
-            <div className="mt-6 rounded-lg border border-white/6 bg-white/2 p-4">
+            <div className="mt-6 rounded-lg border border-white/[0.06] bg-white/[0.03] p-4">
               <p className="mb-1 text-[10px] uppercase tracking-wider text-white/25">
                 Protagonist Motivation
               </p>

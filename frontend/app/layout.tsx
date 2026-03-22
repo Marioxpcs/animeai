@@ -38,7 +38,7 @@ export default function RootLayout({
               >
                 AnimeAI
               </Link>
-              <span className="rounded-full border border-white/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-white/30">
+              <span className="rounded-full border border-indigo-500/20 bg-indigo-500/5 px-2.5 py-0.5 text-[11px] font-medium text-indigo-400/60">
                 beta
               </span>
             </div>

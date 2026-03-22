@@ -45,7 +45,7 @@ export function AnimeResultCard({ result }: { result: RecommendationCard }) {
               <h3 className="text-[15px] font-semibold leading-tight text-white/90 group-hover:text-white">
                 {displayTitle}
               </h3>
-              <span className="flex-shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400">
+              <span className="flex-shrink-0 rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-400">
                 {pct}%
               </span>
             </div>
@@ -71,7 +71,7 @@ export function AnimeResultCard({ result }: { result: RecommendationCard }) {
                   key={i}
                   className="flex items-start gap-1.5 text-xs text-white/35"
                 >
-                  <ChevronRight className="mt-0.5 h-3 w-3 flex-shrink-0 text-emerald-500/50" />
+                  <ChevronRight className="mt-0.5 h-3 w-3 flex-shrink-0 text-indigo-500/50" />
                   <span>{reason}</span>
                 </li>
               ))}
@@ -110,7 +110,7 @@ export function AnimeCardCompact({
             </div>
           )}
           {score !== undefined && (
-            <div className="absolute right-1.5 top-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-xs font-medium text-emerald-400 backdrop-blur-sm">
+            <div className="absolute right-1.5 top-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-xs font-medium text-indigo-400 backdrop-blur-sm">
               {Math.round(score * 100)}%
             </div>
           )}
