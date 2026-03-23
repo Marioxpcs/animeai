@@ -31,3 +31,15 @@ export async function getSimilarAnime(
   );
   return data;
 }
+
+export async function submitRating(
+  userId: string,
+  animeId: number,
+  score: number
+): Promise<void> {
+  await api.post("/api/ratings", {
+    user_id: userId,
+    anime_id: animeId,
+    score,
+  });
+}

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { getAnime, getSimilarAnime } from "@/lib/api";
 import { AnimeResultCard } from "@/components/anime-card";
+import { AnimeRating } from "@/components/anime-rating";
 import type { AnimeCard, RecommendationCard } from "@/lib/types";
 
 function NarrativeTag({
@@ -160,6 +161,11 @@ export default function AnimeDetailPage() {
               )}
               {anime.season_year && <span>{anime.season_year}</span>}
               {anime.episodes && <span>{anime.episodes} episodes</span>}
+            </div>
+
+            {/* Rating */}
+            <div className="mb-4">
+              <AnimeRating animeId={id} />
             </div>
 
             {/* Genres */}
