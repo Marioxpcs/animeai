@@ -78,7 +78,7 @@ export function AuthModal() {
             },
           }}
           providers={["google"]}
-          redirectTo={typeof window !== "undefined" ? window.location.origin : undefined}
+          redirectTo={typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined}
           view="sign_in"
         />
       </div>
