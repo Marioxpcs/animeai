@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Star } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { submitRating } from "@/lib/api";
+import { getSupabase } from "@/lib/supabase";
 
 export function AnimeRating({ animeId }: { animeId: number }) {
   const { user, openAuthModal } = useAuth();
@@ -21,7 +21,26 @@ export function AnimeRating({ animeId }: { animeId: number }) {
     setSelectedScore(score);
     setSubmitting(true);
     try {
-      await submitRating(user.id, animeId, score * 20); // 1-5 stars -> 20-100 scale
+      const supabase = getSupabase();
+
+      // Ensure user record exists
+      await supabase.from("users").upsert(
+        { id: user.id, email: user.email },
+        { onConflict: "id" }
+      );
+
+      // Upsert rating directly via authenticated Supabase client
+      const { error } = await supabase.from("user_ratings").upsert(
+        {
+          user_id: user.id,
+          anime_id: animeId,
+          rating_type: "LIKED",
+          score: score * 20, // 1-5 stars -> 20-100 scale
+        },
+        { onConflict: "user_id,anime_id" }
+      );
+
+      if (error) throw error;
       setSubmitted(true);
     } catch {
       // Silently handle — user sees star stays selected
