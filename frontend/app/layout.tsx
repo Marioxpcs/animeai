@@ -44,16 +44,19 @@ export default function RootLayout({
               <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
                 <Link
                   href="/"
-                  className="transition-opacity hover:opacity-80"
+                  className="flex items-center gap-2 transition-opacity hover:opacity-80"
                 >
                   <Image
-                    src="/Logo_Image.png"
-                    alt="AnimeAI"
-                    width={120}
+                    src="/AA.png"
+                    alt=""
+                    width={32}
                     height={32}
-                    className="h-7 w-auto"
+                    className="h-8 w-8"
                     priority
                   />
+                  <span className="text-[15px] font-semibold tracking-tight text-white/90">
+                    AnimeAI
+                  </span>
                 </Link>
                 <div className="flex items-center gap-3">
                   <span className="rounded-full border border-indigo-500/20 bg-indigo-500/5 px-2.5 py-0.5 text-[11px] font-medium text-indigo-400/60">
