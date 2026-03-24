@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Image from "next/image";
 import Link from "next/link";
 import { PosthogProvider } from "./providers";
 import { AuthProvider } from "@/lib/auth-context";
@@ -20,6 +21,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AnimeAI",
   description: "AI-powered anime recommendations based on narrative DNA",
+  icons: {
+    icon: "/AA.png",
+    apple: "/AA.png",
+  },
 };
 
 export default function RootLayout({
@@ -39,9 +44,16 @@ export default function RootLayout({
               <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
                 <Link
                   href="/"
-                  className="text-[15px] font-semibold tracking-tight text-white/90 transition-colors hover:text-white"
+                  className="transition-opacity hover:opacity-80"
                 >
-                  AnimeAI
+                  <Image
+                    src="/Logo_Image.png"
+                    alt="AnimeAI"
+                    width={120}
+                    height={32}
+                    className="h-7 w-auto"
+                    priority
+                  />
                 </Link>
                 <div className="flex items-center gap-3">
                   <span className="rounded-full border border-indigo-500/20 bg-indigo-500/5 px-2.5 py-0.5 text-[11px] font-medium text-indigo-400/60">
