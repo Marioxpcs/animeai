@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Image from "next/image";
-import Link from "next/link";
+import { NavLogo } from "@/components/nav-logo";
 import { PosthogProvider } from "./providers";
 import { AuthProvider } from "@/lib/auth-context";
 import { AuthModal } from "@/components/auth-modal";
@@ -42,22 +41,7 @@ export default function RootLayout({
             <AuthModal />
             <nav className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#09090b]/80 backdrop-blur-xl">
               <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
-                <Link
-                  href="/"
-                  className="flex items-center gap-2 transition-opacity hover:opacity-80"
-                >
-                  <Image
-                    src="/AA.png"
-                    alt=""
-                    width={32}
-                    height={32}
-                    className="h-8 w-8"
-                    priority
-                  />
-                  <span className="text-[15px] font-semibold tracking-tight text-white/90">
-                    AnimeAI
-                  </span>
-                </Link>
+                <NavLogo />
                 <div className="flex items-center gap-3">
                   <span className="rounded-full border border-indigo-500/20 bg-indigo-500/5 px-2.5 py-0.5 text-[11px] font-medium text-indigo-400/60">
                     beta
