@@ -52,6 +52,16 @@ export default function RootLayout({
               </div>
             </nav>
             <main className="mx-auto max-w-5xl px-6">{children}</main>
+            <footer className="mt-20 border-t border-white/4 py-6 text-center">
+              <a
+                href="https://animeai.canny.io/animeai-feedback"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-white/20 transition-colors hover:text-white/40"
+              >
+                Give feedback
+              </a>
+            </footer>
           </AuthProvider>
         </PosthogProvider>
       </body>
