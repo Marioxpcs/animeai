@@ -275,13 +275,23 @@ def run(
                 while total_fetched < limit:
                     progress.update(task, description=f"[cyan]Fetching page {page}...")
 
-                    try:
-                        page_data = await fetch_page(client, page)
-                    except httpx.HTTPStatusError as e:
-                        console.print(f"[red]HTTP error on page {page}: {e}[/red]")
-                        break
-                    except Exception as e:
-                        console.print(f"[red]Error on page {page}: {e}[/red]")
+                    page_data = None
+                    for attempt in range(5):
+                        try:
+                            page_data = await fetch_page(client, page)
+                            break
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 429:
+                                wait = 30 * (attempt + 1)
+                                console.print(f"[yellow]Rate limited on page {page}, waiting {wait}s (attempt {attempt+1}/5)...[/yellow]")
+                                await asyncio.sleep(wait)
+                            else:
+                                console.print(f"[red]HTTP error on page {page}: {e}[/red]")
+                                break
+                        except Exception as e:
+                            console.print(f"[red]Error on page {page}: {e}[/red]")
+                            break
+                    if page_data is None:
                         break
 
                     media_list = page_data.get("media", [])
@@ -325,8 +335,8 @@ def run(
                         break
 
                     page += 1
-                    # Be respectful — small delay between pages
-                    await asyncio.sleep(0.7)
+                    # Be respectful — AniList allows ~90 req/min
+                    await asyncio.sleep(1.5)
 
         asyncio.run(fetch_all())
 

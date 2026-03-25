@@ -13,14 +13,20 @@ All three return a list of RecommendationResult objects with explanations.
 import os
 import re
 import json
+import time
+import logging
 import asyncio
 import anthropic
+import cohere
 from dataclasses import dataclass
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from db.schema import Anime, AnimeNarrative, AnimeEmbedding, UserRating
-from pipeline.enricher import generate_embedding
+from pipeline.enricher import generate_embedding, get_cohere_client
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -353,6 +359,46 @@ async def _generate_explanations_parallel(
     return results
 
 
+# ─── Embedding with retry + error propagation ────────────────────────────────
+
+def _embed_with_retry(text: str, input_type: str = "search_query") -> list[float]:
+    """
+    Generate embedding via Cohere with one retry on failure.
+    Raises HTTPException 503 on persistent failure so the user sees a real error.
+    """
+    last_error = None
+    for attempt in range(2):
+        try:
+            client = get_cohere_client()
+            response = client.embed(
+                texts=[text],
+                model="embed-english-v3.0",
+                input_type=input_type,
+            )
+            return response.embeddings[0]
+        except cohere.TooManyRequestsError as e:
+            logger.error("Cohere 429 rate limit (attempt %d/2): %s", attempt + 1, e)
+            last_error = e
+            if attempt == 0:
+                time.sleep(2)
+        except Exception as e:
+            logger.error("Cohere embedding error (attempt %d/2): %s", attempt + 1, e)
+            last_error = e
+            if attempt == 0:
+                time.sleep(2)
+
+    # Both attempts failed
+    if isinstance(last_error, cohere.TooManyRequestsError):
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "rate_limit", "message": "Search is temporarily unavailable. Please try again in a minute."},
+        )
+    raise HTTPException(
+        status_code=503,
+        detail={"error": "embedding_failed", "message": "Search is temporarily unavailable. Please try again."},
+    )
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 async def recommend_from_query(
@@ -369,9 +415,7 @@ async def recommend_from_query(
 
     # Generate query embedding (search_query type for Cohere asymmetric search)
     embedding_text = intent_to_embedding_text(intent, query_text)
-    query_vector   = generate_embedding(embedding_text, input_type="search_query")
-    if not query_vector:
-        return []
+    query_vector = _embed_with_retry(embedding_text)
 
     # Vector search + dedup by series + content filter
     allow_explicit = _query_wants_explicit(query_text)
