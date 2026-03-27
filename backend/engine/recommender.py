@@ -15,7 +15,6 @@ import re
 import json
 import time
 import logging
-import asyncio
 import anthropic
 import cohere
 from dataclasses import dataclass
@@ -277,53 +276,69 @@ def _resolve_referenced_ids(
     return list(ids)
 
 
-# ─── Step 4: Generate explanation (async) ────────────────────────────────────
+# ─── Step 4: Generate explanations (batched single Claude call) ──────────────
 
-EXPLANATION_SYSTEM = """
-You are an anime recommendation assistant. Given a user's query or a source anime,
-explain concisely and specifically why the recommended anime is a great match.
+EXPLANATION_SYSTEM = """You are an anime recommendation assistant. Given a user's query and a list of matched anime with their narrative profiles, explain concisely and specifically why each anime is a great match.
 
 Be specific — reference actual narrative elements, not generic praise.
-Return a JSON object only.
-"""
+Respond ONLY with valid JSON — no markdown fences, no preamble, no trailing text."""
 
-async def generate_explanation(
-    query_or_source: str,
-    recommended: Anime,
-    narrative: AnimeNarrative,
-    similarity_score: float
-) -> tuple[str, list[str], float]:
-    """
-    Generate a human-readable explanation for why this anime was recommended.
-    Returns (explanation_paragraph, [bullet_point_reasons], match_confidence)
-    """
+
+def _build_anime_block(idx: int, anime: Anime, narrative: AnimeNarrative) -> str:
+    """Format one anime's data for the batched explanation prompt."""
     themes_str = ", ".join(narrative.themes or [])
     rel_str    = ", ".join(narrative.relationship_types or [])
-
-    prompt = f"""Given this request: "{query_or_source}"
-
-The recommended anime is: {recommended.title_romaji}
-{f'({recommended.title_english})' if recommended.title_english else ''}
-
-Its narrative profile:
+    title_line = anime.title_romaji
+    if anime.title_english:
+        title_line += f" ({anime.title_english})"
+    return f"""Anime #{idx} (id={anime.id}): {title_line}
 - Protagonist: {narrative.protagonist_archetype}, {narrative.power_origin} power, {narrative.growth_type} growth
 - Conflict: {narrative.conflict_type}, Stakes: {narrative.stakes_level}
 - Tone: {narrative.tone}, Pacing: {narrative.pacing}
 - Themes: {themes_str}
 - Relationships: {rel_str}
-- Summary: {narrative.narrative_summary}
+- Summary: {narrative.narrative_summary}"""
 
-Return JSON:
-{{
-  "explanation": <1-2 sentence explanation of why this matches the request>,
-  "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
-  "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
-}}"""
+
+async def _generate_explanations_batch(
+    query_label: str,
+    candidates: list[tuple[Anime, AnimeNarrative, float]],
+    limit: int,
+) -> list[RecommendationResult]:
+    """
+    Generate explanations for all candidates in a single Claude call.
+    Falls back to per-result structural explanations on failure.
+    """
+    pool = candidates[:limit + 5]
+    if not pool:
+        return []
+
+    # Build one prompt with all anime
+    anime_blocks = "\n\n".join(
+        _build_anime_block(i + 1, anime, narrative)
+        for i, (anime, narrative, _) in enumerate(pool)
+    )
+
+    prompt = f"""Given this request: "{query_label}"
+
+Here are the matched anime. For EACH one, explain why it matches the request.
+
+{anime_blocks}
+
+Return a JSON array with one object per anime, in the same order:
+[
+  {{
+    "anime_id": <the anime id>,
+    "explanation": <1-2 sentence explanation of why this matches the request>,
+    "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
+    "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
+  }}
+]"""
 
     try:
         message = await client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=300,
+            max_tokens=300 * len(pool),
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -332,60 +347,52 @@ Return JSON:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        data = json.loads(raw.strip())
-        return (
-            data.get("explanation", ""),
-            data.get("reasons", []),
-            float(data.get("match_confidence", 0.7)),
-        )
-    except Exception:
-        # Fallback explanation from structured data
-        explanation = f"Matches your request with {similarity_score:.0%} narrative similarity."
-        reasons     = [
-            f"Protagonist archetype: {narrative.protagonist_archetype}",
-            f"Growth type: {narrative.growth_type}",
-            f"Tone: {narrative.tone}",
-        ]
-        return explanation, reasons, 0.7
+        explanations_list = json.loads(raw.strip())
 
+        # Index by anime_id for reliable lookup
+        by_id = {int(e["anime_id"]): e for e in explanations_list}
 
-# ─── Helper: parallel explanation generation with confidence filter ───────────
+        results = []
+        for anime, narrative, score in pool:
+            entry = by_id.get(anime.id)
+            if not entry:
+                continue
+            confidence = float(entry.get("match_confidence", 0.7))
+            if confidence < CONFIDENCE_THRESHOLD:
+                continue
+            results.append(RecommendationResult(
+                anime=anime,
+                narrative=narrative,
+                similarity_score=score,
+                explanation=entry.get("explanation", ""),
+                match_reasons=entry.get("reasons", []),
+                match_confidence=confidence,
+            ))
+            if len(results) >= limit:
+                break
 
-async def _generate_explanations_parallel(
-    query_label: str,
-    candidates: list[tuple[Anime, AnimeNarrative, float]],
-    limit: int,
-) -> list[RecommendationResult]:
-    """
-    Fire all explanation calls in parallel via asyncio.gather(),
-    then filter by confidence and cap at limit.
-    """
-    pool = candidates[:limit + 5]
+        return results
 
-    # Launch all explanation calls simultaneously
-    tasks = [
-        generate_explanation(query_label, anime, narrative, score)
-        for anime, narrative, score in pool
-    ]
-    explanations = await asyncio.gather(*tasks)
-
-    # Zip results back with candidates, filter by confidence
-    results = []
-    for (anime, narrative, score), (explanation, reasons, confidence) in zip(pool, explanations):
-        if confidence < CONFIDENCE_THRESHOLD:
-            continue
-        results.append(RecommendationResult(
-            anime=anime,
-            narrative=narrative,
-            similarity_score=score,
-            explanation=explanation,
-            match_reasons=reasons,
-            match_confidence=confidence,
-        ))
-        if len(results) >= limit:
-            break
-
-    return results
+    except Exception as exc:
+        logger.warning("Batch explanation failed, using structural fallback: %s", exc)
+        # Fallback: build explanations from structured narrative data
+        results = []
+        for anime, narrative, score in pool:
+            results.append(RecommendationResult(
+                anime=anime,
+                narrative=narrative,
+                similarity_score=score,
+                explanation=f"Matches your request with {score:.0%} narrative similarity.",
+                match_reasons=[
+                    f"Protagonist archetype: {narrative.protagonist_archetype}",
+                    f"Growth type: {narrative.growth_type}",
+                    f"Tone: {narrative.tone}",
+                ],
+                match_confidence=0.7,
+            ))
+            if len(results) >= limit:
+                break
+        return results
 
 
 # ─── Embedding with retry + error propagation ────────────────────────────────
@@ -457,7 +464,83 @@ async def recommend_from_query(
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
     # Generate explanations in parallel
-    return await _generate_explanations_parallel(query_text, candidates, limit)
+    return await _generate_explanations_batch(query_text, candidates, limit)
+
+
+async def search_candidates(
+    db: Session,
+    query_text: str,
+    limit: int = 8,
+) -> tuple[list[tuple[Anime, AnimeNarrative, float]], str]:
+    """
+    Phase 1 of streaming search: parse intent, embed, vector search, dedup, filter.
+    Returns (candidates, query_text) — no explanations yet.
+    """
+    intent = await parse_nl_query(query_text)
+
+    referenced_titles = intent.get("referenced_titles") or []
+    exclude_ids = _resolve_referenced_ids(db, referenced_titles) if referenced_titles else []
+
+    embedding_text = intent_to_embedding_text(intent, query_text)
+    query_vector = _embed_with_retry(embedding_text)
+
+    allow_explicit = _query_wants_explicit(query_text)
+    candidates = vector_search(db, query_vector, exclude_ids=exclude_ids, limit=limit * 3)
+    candidates = deduplicate_by_series(candidates, db=db)
+    candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
+
+    return candidates[:limit + 5], query_text
+
+
+async def generate_explanations_for_candidates(
+    query_label: str,
+    candidates: list[tuple[Anime, AnimeNarrative, float]],
+) -> dict[int, dict]:
+    """
+    Phase 2 of streaming search: batch Claude call, returns {anime_id: explanation_dict}.
+    On failure returns empty dict (caller should handle missing explanations).
+    """
+    if not candidates:
+        return {}
+
+    anime_blocks = "\n\n".join(
+        _build_anime_block(i + 1, anime, narrative)
+        for i, (anime, narrative, _) in enumerate(candidates)
+    )
+
+    prompt = f"""Given this request: "{query_label}"
+
+Here are the matched anime. For EACH one, explain why it matches the request.
+
+{anime_blocks}
+
+Return a JSON array with one object per anime, in the same order:
+[
+  {{
+    "anime_id": <the anime id>,
+    "explanation": <1-2 sentence explanation of why this matches the request>,
+    "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
+    "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
+  }}
+]"""
+
+    try:
+        message = await client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300 * len(candidates),
+            system=EXPLANATION_SYSTEM,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        explanations_list = json.loads(raw.strip())
+        return {int(e["anime_id"]): e for e in explanations_list}
+    except Exception as exc:
+        logger.warning("Batch explanation failed in streaming path: %s", exc)
+        return {}
 
 
 async def recommend_from_anime(
@@ -497,7 +580,7 @@ async def recommend_from_anime(
 
     # Generate explanations in parallel
     query_label = f"anime similar to {source_anime.title_romaji}"
-    return await _generate_explanations_parallel(query_label, candidates, limit)
+    return await _generate_explanations_batch(query_label, candidates, limit)
 
 
 async def recommend_for_user(
@@ -561,4 +644,4 @@ async def recommend_for_user(
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
     # Generate explanations in parallel
-    return await _generate_explanations_parallel("anime matching your taste profile", candidates, limit)
+    return await _generate_explanations_batch("anime matching your taste profile", candidates, limit)
