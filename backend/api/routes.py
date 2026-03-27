@@ -4,6 +4,7 @@ FastAPI REST API — all endpoints the frontend calls.
 
 Endpoints:
   GET  /api/anime/search          → NL query recommendations
+  GET  /api/anime/search/stream   → SSE streaming search
   GET  /api/anime/{id}/similar    → Similarity-based recommendations
   GET  /api/anime/{id}            → Single anime detail
   GET  /api/anime/search/instant  → Fast search by title (autocomplete)
@@ -11,7 +12,10 @@ Endpoints:
   GET  /api/users/{id}/feed       → Personalized home feed
 """
 
+import json
+import logging
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -21,8 +25,14 @@ from engine.recommender import (
     recommend_from_query,
     recommend_from_anime,
     recommend_for_user,
-    RecommendationResult
+    search_candidates,
+    generate_explanations_for_candidates,
+    RecommendationResult,
+    CONFIDENCE_THRESHOLD,
 )
+from engine import cache
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -112,16 +122,97 @@ def result_to_card(result: RecommendationResult) -> RecommendationCard:
 
 @router.get("/anime/search", response_model=list[RecommendationCard])
 async def search_anime(
-    q:     str = Query(..., min_length=3, description="Natural language query"),
-    limit: int = Query(20, ge=1, le=50),
-    db:    Session = Depends(get_db)
+    q:       str  = Query(..., min_length=3, description="Natural language query"),
+    limit:   int  = Query(20, ge=1, le=50),
+    nocache: bool = Query(False),
+    db:      Session = Depends(get_db)
 ):
     """
     Natural language anime discovery.
     Example: GET /api/anime/search?q=underdog+who+works+hard+to+get+stronger
     """
+    # Check cache (unless bypassed)
+    if not nocache:
+        cached = cache.get(q)
+        if cached is not None:
+            return cached
+
     results = await recommend_from_query(db, q, limit=limit)
-    return [result_to_card(r) for r in results]
+    cards = [result_to_card(r) for r in results]
+
+    # Store in cache
+    if not nocache:
+        cache.put(q, [c.model_dump() for c in cards])
+
+    return cards
+
+
+@router.get("/anime/search/stream")
+async def search_anime_stream(
+    q:     str = Query(..., min_length=3, description="Natural language query"),
+    limit: int = Query(20, ge=1, le=50),
+    db:    Session = Depends(get_db),
+):
+    """
+    SSE streaming search: sends anime cards immediately, then streams explanations.
+    """
+    async def event_stream():
+        try:
+            # Phase 1: vector search (fast)
+            candidates, query_label = await search_candidates(db, q, limit=limit)
+            pool = candidates[:limit]
+
+            # Emit results event with all anime cards (no explanations yet)
+            results_payload = []
+            for anime, narrative, score in pool:
+                card = anime_to_card(anime, narrative)
+                results_payload.append({
+                    **card.model_dump(),
+                    "similarity_score": score,
+                })
+            yield f"event: results\ndata: {json.dumps(results_payload)}\n\n"
+
+            # Phase 2: batch explanation call
+            explanations = await generate_explanations_for_candidates(query_label, pool)
+
+            for anime, narrative, score in pool:
+                entry = explanations.get(anime.id)
+                if entry:
+                    confidence = float(entry.get("match_confidence", 0.7))
+                    payload = {
+                        "anime_id": anime.id,
+                        "explanation": entry.get("explanation", ""),
+                        "match_reasons": entry.get("reasons", []),
+                        "match_confidence": confidence,
+                    }
+                else:
+                    payload = {
+                        "anime_id": anime.id,
+                        "explanation": f"Matches your request with {score:.0%} narrative similarity.",
+                        "match_reasons": [
+                            f"Protagonist archetype: {narrative.protagonist_archetype}",
+                            f"Growth type: {narrative.growth_type}",
+                            f"Tone: {narrative.tone}",
+                        ],
+                        "match_confidence": 0.7,
+                    }
+                yield f"event: explanation\ndata: {json.dumps(payload)}\n\n"
+
+            yield "event: done\ndata: {}\n\n"
+
+        except Exception as exc:
+            logger.error("SSE stream error: %s", exc)
+            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/anime/{anime_id}/similar", response_model=list[RecommendationCard])
