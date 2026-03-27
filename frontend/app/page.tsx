@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import posthog from "posthog-js";
 import { Search, Loader2, Sparkles } from "lucide-react";
-import { searchAnime } from "@/lib/api";
+import { searchAnime, streamSearch } from "@/lib/api";
 import { AnimeResultCard } from "@/components/anime-card";
-import type { RecommendationCard } from "@/lib/types";
+import type { RecommendationCard, StreamResultAnime, StreamExplanation } from "@/lib/types";
 
 export default function Home() {
   const [query, setQuery] = useState("");
@@ -13,31 +13,22 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [explanationsLoaded, setExplanationsLoaded] = useState<Set<number>>(new Set());
+  const [cardsReady, setCardsReady] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim() || loading) return;
-
-    const trimmed = query.trim();
-    setLoading(true);
-    setError(null);
-    setSearched(true);
-
-    posthog.capture("search_submitted", {
-      query: trimmed,
-      query_length: trimmed.length,
-    });
-
+  const fallbackSearch = useCallback(async (trimmed: string) => {
     try {
       const data = await searchAnime(trimmed, 20);
       setResults(data);
+      setExplanationsLoaded(new Set(data.map((d) => d.anime.id)));
+      setCardsReady(true);
       posthog.capture("search_results_viewed", {
         query: trimmed,
         result_count: data.length,
       });
     } catch (err) {
-      const msg = "Failed to fetch recommendations. Is the backend running?";
-      setError(msg);
+      setError("Failed to fetch recommendations. Is the backend running?");
       setResults([]);
       posthog.capture("search_failed", {
         query: trimmed,
@@ -46,6 +37,87 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    if (!query.trim() || loading) return;
+
+    const trimmed = query.trim();
+    setLoading(true);
+    setError(null);
+    setSearched(true);
+    setResults([]);
+    setExplanationsLoaded(new Set());
+    setCardsReady(false);
+
+    // Abort any in-flight stream
+    abortRef.current?.abort();
+
+    posthog.capture("search_submitted", {
+      query: trimmed,
+      query_length: trimmed.length,
+    });
+
+    const controller = streamSearch(trimmed, 20, {
+      onResults(anime: StreamResultAnime[]) {
+        const cards: RecommendationCard[] = anime.map((a) => ({
+          anime: {
+            id: a.id,
+            title: a.title,
+            title_english: a.title_english,
+            cover_image: a.cover_image,
+            average_score: a.average_score,
+            episodes: a.episodes,
+            season_year: a.season_year,
+            genres: a.genres,
+            narrative: a.narrative,
+          },
+          similarity_score: a.similarity_score,
+          explanation: "",
+          match_reasons: [],
+        }));
+        setResults(cards);
+        setCardsReady(true);
+      },
+      onExplanation(data: StreamExplanation) {
+        setResults((prev) =>
+          prev.map((r) =>
+            r.anime.id === data.anime_id
+              ? {
+                  ...r,
+                  explanation: data.explanation,
+                  match_reasons: data.match_reasons,
+                  match_confidence: data.match_confidence,
+                }
+              : r
+          )
+        );
+        setExplanationsLoaded((prev) => new Set(prev).add(data.anime_id));
+      },
+      onDone() {
+        // Mark any remaining cards without explanations as done
+        setResults((prev) => {
+          const allIds = new Set(prev.map((r) => r.anime.id));
+          setExplanationsLoaded(allIds);
+          return prev.map((r) =>
+            !r.explanation
+              ? { ...r, explanation: "Explanation unavailable." }
+              : r
+          );
+        });
+        setLoading(false);
+        posthog.capture("search_results_viewed", {
+          query: trimmed,
+          result_count: -1, // streamed
+        });
+      },
+      onError() {
+        // SSE failed — fall back to regular endpoint
+        fallbackSearch(trimmed);
+      },
+    });
+    abortRef.current = controller;
   }
 
   return (
@@ -116,8 +188,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Loading state */}
-      {loading && (
+      {/* Loading state — before cards arrive */}
+      {loading && !cardsReady && (
         <div className="flex flex-col items-center gap-3 py-20">
           <Loader2 className="h-6 w-6 animate-spin text-white/20" />
           <p className="text-sm text-white/30">
@@ -126,14 +198,24 @@ export default function Home() {
         </div>
       )}
 
-      {/* Results */}
-      {!loading && results.length > 0 && (
+      {/* Results — show as soon as cards are ready */}
+      {cardsReady && results.length > 0 && (
         <div className="space-y-3 pb-16">
           <p className="mb-4 text-xs font-medium uppercase tracking-wider text-white/25">
             {results.length} results
+            {loading && (
+              <span className="ml-2 inline-flex items-center gap-1 normal-case tracking-normal text-white/20">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                loading explanations...
+              </span>
+            )}
           </p>
           {results.map((result) => (
-            <AnimeResultCard key={result.anime.id} result={result} />
+            <AnimeResultCard
+              key={result.anime.id}
+              result={result}
+              explanationLoading={!explanationsLoaded.has(result.anime.id)}
+            />
           ))}
         </div>
       )}

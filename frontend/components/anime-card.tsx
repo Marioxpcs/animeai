@@ -5,7 +5,13 @@ import Image from "next/image";
 import { Star, ChevronRight } from "lucide-react";
 import type { RecommendationCard } from "@/lib/types";
 
-export function AnimeResultCard({ result }: { result: RecommendationCard }) {
+export function AnimeResultCard({
+  result,
+  explanationLoading,
+}: {
+  result: RecommendationCard;
+  explanationLoading?: boolean;
+}) {
   const { anime, similarity_score, explanation, match_reasons } = result;
   const displayTitle = anime.title_english || anime.title;
   const pct = Math.round(similarity_score * 100);
@@ -60,22 +66,37 @@ export function AnimeResultCard({ result }: { result: RecommendationCard }) {
             </div>
 
             {/* Explanation */}
-            <p className="mb-2 text-[13px] leading-relaxed text-white/50">
-              {explanation}
-            </p>
+            {explanationLoading ? (
+              <div className="mb-2 space-y-1.5">
+                <div className="h-3.5 w-full animate-pulse rounded bg-white/[0.06]" />
+                <div className="h-3.5 w-3/4 animate-pulse rounded bg-white/[0.06]" />
+              </div>
+            ) : (
+              <p className="mb-2 animate-fade-in text-[13px] leading-relaxed text-white/50">
+                {explanation}
+              </p>
+            )}
 
             {/* Match reasons */}
-            <ul className="space-y-0.5">
-              {match_reasons.slice(0, 3).map((reason, i) => (
-                <li
-                  key={i}
-                  className="flex items-start gap-1.5 text-xs text-white/35"
-                >
-                  <ChevronRight className="mt-0.5 h-3 w-3 flex-shrink-0 text-indigo-500/50" />
-                  <span>{reason}</span>
-                </li>
-              ))}
-            </ul>
+            {explanationLoading ? (
+              <div className="space-y-1">
+                {[1, 2, 3].map((n) => (
+                  <div key={n} className="h-3 w-2/3 animate-pulse rounded bg-white/[0.04]" />
+                ))}
+              </div>
+            ) : (
+              <ul className="animate-fade-in space-y-0.5">
+                {match_reasons.slice(0, 3).map((reason, i) => (
+                  <li
+                    key={i}
+                    className="flex items-start gap-1.5 text-xs text-white/35"
+                  >
+                    <ChevronRight className="mt-0.5 h-3 w-3 flex-shrink-0 text-indigo-500/50" />
+                    <span>{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </div>

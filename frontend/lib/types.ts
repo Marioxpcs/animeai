@@ -29,4 +29,16 @@ export interface RecommendationCard {
   similarity_score: number;
   explanation: string;
   match_reasons: string[];
+  match_confidence?: number;
+}
+
+export interface StreamResultAnime extends AnimeCard {
+  similarity_score: number;
+}
+
+export interface StreamExplanation {
+  anime_id: number;
+  explanation: string;
+  match_reasons: string[];
+  match_confidence: number;
 }
