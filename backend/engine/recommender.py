@@ -82,7 +82,8 @@ Return this JSON structure:
   "relationship_types": [<relevant: "mentor_student"|"rival_rival"|"romantic"|"found_family">],
   "power_system": <"hard_magic"|"soft_magic"|"physical_realism"|"tech_based"|"none"|null>,
   "stakes_level": <"personal"|"community"|"national"|"global"|"cosmic"|null>,
-  "narrative_keywords": <2-3 sentence description of the ideal anime in plain English>
+  "narrative_keywords": <2-3 sentence description of the ideal anime in plain English>,
+  "referenced_titles": [<list of anime titles the user is explicitly referencing, e.g. "anime like steins gate and death note" → ["Steins;Gate", "Death Note"]. Use the canonical/official English or romaji title. Return [] if the user is not referencing any specific anime>]
 }}"""
 
     try:
@@ -246,6 +247,34 @@ def _filter_by_content(
         (a, n, s) for a, n, s in results
         if (n.content_level or "clean") not in FILTERED_LEVELS
     ]
+
+
+# ─── Referenced title exclusion ───────────────────────────────────────────────
+
+def _resolve_referenced_ids(
+    db: Session,
+    referenced_titles: list[str],
+) -> list[int]:
+    """
+    Fuzzy-match LLM-extracted referenced titles against anime title_romaji
+    and title_english.  Returns a list of anime IDs to exclude.
+    """
+    if not referenced_titles:
+        return []
+
+    ids: set[int] = set()
+    for title in referenced_titles:
+        pattern = f"%{title}%"
+        rows = db.execute(
+            text(
+                "SELECT id FROM anime "
+                "WHERE LOWER(title_romaji)  LIKE LOWER(:pat) "
+                "   OR LOWER(title_english) LIKE LOWER(:pat)"
+            ),
+            {"pat": pattern},
+        ).fetchall()
+        ids.update(row.id for row in rows)
+    return list(ids)
 
 
 # ─── Step 4: Generate explanation (async) ────────────────────────────────────
@@ -413,13 +442,17 @@ async def recommend_from_query(
     # Parse intent
     intent = await parse_nl_query(query_text)
 
+    # Resolve referenced titles so we can exclude them from results
+    referenced_titles = intent.get("referenced_titles") or []
+    exclude_ids = _resolve_referenced_ids(db, referenced_titles) if referenced_titles else []
+
     # Generate query embedding (search_query type for Cohere asymmetric search)
     embedding_text = intent_to_embedding_text(intent, query_text)
     query_vector = _embed_with_retry(embedding_text)
 
     # Vector search + dedup by series + content filter
     allow_explicit = _query_wants_explicit(query_text)
-    candidates = vector_search(db, query_vector, limit=limit * 3)
+    candidates = vector_search(db, query_vector, exclude_ids=exclude_ids, limit=limit * 3)
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
 
