@@ -13,6 +13,7 @@ Endpoints:
 """
 
 import json
+import time
 import logging
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
@@ -26,7 +27,7 @@ from engine.recommender import (
     recommend_from_anime,
     recommend_for_user,
     search_candidates,
-    generate_explanations_for_candidates,
+    generate_explanations_stream,
     RecommendationResult,
     CONFIDENCE_THRESHOLD,
 )
@@ -154,51 +155,34 @@ async def search_anime_stream(
     db:    Session = Depends(get_db),
 ):
     """
-    SSE streaming search: sends anime cards immediately, then streams explanations.
+    SSE streaming search: sends anime cards immediately, then streams each
+    explanation as it arrives (parallel Haiku calls, one per anime).
     """
     async def event_stream():
+        t_total = time.time()
         try:
-            # Phase 1: vector search (fast)
+            # Phase 1: intent parse + embed + vector search (logged inside search_candidates)
             candidates, query_label = await search_candidates(db, q, limit=limit)
-            pool = candidates[:limit]
 
-            # Emit results event with all anime cards (no explanations yet)
+            # Emit results immediately — cards visible on frontend within ~2s
             results_payload = []
-            for anime, narrative, score in pool:
+            for anime, narrative, score in candidates:
                 card = anime_to_card(anime, narrative)
-                results_payload.append({
-                    **card.model_dump(),
-                    "similarity_score": score,
-                })
+                results_payload.append({**card.model_dump(), "similarity_score": score})
             yield f"event: results\ndata: {json.dumps(results_payload)}\n\n"
+            logger.info("TIMING | results_event_sent: %.2fs", time.time() - t_total)
 
-            # Phase 2: batch explanation call
-            explanations = await generate_explanations_for_candidates(query_label, pool)
-
-            for anime, narrative, score in pool:
-                entry = explanations.get(anime.id)
-                if entry:
-                    confidence = float(entry.get("match_confidence", 0.7))
-                    payload = {
-                        "anime_id": anime.id,
-                        "explanation": entry.get("explanation", ""),
-                        "match_reasons": entry.get("reasons", []),
-                        "match_confidence": confidence,
-                    }
-                else:
-                    payload = {
-                        "anime_id": anime.id,
-                        "explanation": f"Matches your request with {score:.0%} narrative similarity.",
-                        "match_reasons": [
-                            f"Protagonist archetype: {narrative.protagonist_archetype}",
-                            f"Growth type: {narrative.growth_type}",
-                            f"Tone: {narrative.tone}",
-                        ],
-                        "match_confidence": 0.7,
-                    }
-                yield f"event: explanation\ndata: {json.dumps(payload)}\n\n"
+            # Phase 2: parallel Haiku calls, one per anime — yield each as it arrives
+            if candidates:
+                t0 = time.time()
+                queue = await generate_explanations_stream(query_label, candidates)
+                for _ in range(len(candidates)):
+                    payload = await queue.get()
+                    yield f"event: explanation\ndata: {json.dumps(payload)}\n\n"
+                logger.info("TIMING | explanation_gen (all): %.2fs", time.time() - t0)
 
             yield "event: done\ndata: {}\n\n"
+            logger.info("TIMING | total: %.2fs", time.time() - t_total)
 
         except Exception as exc:
             logger.error("SSE stream error: %s", exc)

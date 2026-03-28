@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import asyncio
 import logging
 import anthropic
 import cohere
@@ -29,7 +30,11 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client       = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+haiku_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+HAIKU_MODEL  = "claude-haiku-4-5-20251001"
+SONNET_MODEL = "claude-sonnet-4-20250514"
 
 
 # ─── Data Classes ─────────────────────────────────────────────────────────────
@@ -285,19 +290,17 @@ Respond ONLY with valid JSON — no markdown fences, no preamble, no trailing te
 
 
 def _build_anime_block(idx: int, anime: Anime, narrative: AnimeNarrative) -> str:
-    """Format one anime's data for the batched explanation prompt."""
-    themes_str = ", ".join(narrative.themes or [])
-    rel_str    = ", ".join(narrative.relationship_types or [])
+    """Format one anime's data for explanation prompts — trimmed to 5 key fields."""
+    themes_str = ", ".join((narrative.themes or [])[:4])
     title_line = anime.title_romaji
     if anime.title_english:
         title_line += f" ({anime.title_english})"
+    summary = (narrative.narrative_summary or "")[:250]  # cap summary length
     return f"""Anime #{idx} (id={anime.id}): {title_line}
-- Protagonist: {narrative.protagonist_archetype}, {narrative.power_origin} power, {narrative.growth_type} growth
-- Conflict: {narrative.conflict_type}, Stakes: {narrative.stakes_level}
-- Tone: {narrative.tone}, Pacing: {narrative.pacing}
+- Archetype/Growth: {narrative.protagonist_archetype}, {narrative.growth_type}
+- Tone: {narrative.tone} | Conflict: {narrative.conflict_type}
 - Themes: {themes_str}
-- Relationships: {rel_str}
-- Summary: {narrative.narrative_summary}"""
+- Summary: {summary}"""
 
 
 async def _generate_explanations_batch(
@@ -306,42 +309,35 @@ async def _generate_explanations_batch(
     limit: int,
 ) -> list[RecommendationResult]:
     """
-    Generate explanations for all candidates in a single Claude call.
+    Generate explanations for all candidates in a single Haiku call.
+    Capped at 6 results to keep the prompt tight and fast.
     Falls back to per-result structural explanations on failure.
     """
-    pool = candidates[:limit + 5]
+    pool = candidates[:min(limit, 6)]  # cap at 6 — Haiku is fast but keep prompt small
     if not pool:
         return []
 
-    # Build one prompt with all anime
     anime_blocks = "\n\n".join(
         _build_anime_block(i + 1, anime, narrative)
         for i, (anime, narrative, _) in enumerate(pool)
     )
 
-    prompt = f"""Given this request: "{query_label}"
-
-Here are the matched anime. For EACH one, explain why it matches the request.
+    prompt = f"""Request: "{query_label}"
 
 {anime_blocks}
 
-Return a JSON array with one object per anime, in the same order:
-[
-  {{
-    "anime_id": <the anime id>,
-    "explanation": <1-2 sentence explanation of why this matches the request>,
-    "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
-    "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
-  }}
-]"""
+Return JSON array (one object per anime):
+[{{"anime_id": <id>, "explanation": <1-2 sentences>, "reasons": [<3 bullets, max 12 words each>], "match_confidence": <0.0-1.0>}}]"""
 
     try:
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300 * len(pool),
+        t0 = time.time()
+        message = await haiku_client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=200 * len(pool),
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
         )
+        logger.info("TIMING | explanation_gen: %.2fs", time.time() - t0)
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -349,7 +345,6 @@ Return a JSON array with one object per anime, in the same order:
                 raw = raw[4:]
         explanations_list = json.loads(raw.strip())
 
-        # Index by anime_id for reliable lookup
         by_id = {int(e["anime_id"]): e for e in explanations_list}
 
         results = []
@@ -375,7 +370,6 @@ Return a JSON array with one object per anime, in the same order:
 
     except Exception as exc:
         logger.warning("Batch explanation failed, using structural fallback: %s", exc)
-        # Fallback: build explanations from structured narrative data
         results = []
         for anime, narrative, score in pool:
             results.append(RecommendationResult(
@@ -446,25 +440,33 @@ async def recommend_from_query(
     Main recommendation function for natural language queries.
     "I want an anime where the MC works hard and gradually gets stronger..."
     """
-    # Parse intent
-    intent = await parse_nl_query(query_text)
+    t_total = time.time()
 
-    # Resolve referenced titles so we can exclude them from results
+    t0 = time.time()
+    intent = await parse_nl_query(query_text)
+    logger.info("TIMING | intent_parse: %.2fs", time.time() - t0)
+
     referenced_titles = intent.get("referenced_titles") or []
     exclude_ids = _resolve_referenced_ids(db, referenced_titles) if referenced_titles else []
 
-    # Generate query embedding (search_query type for Cohere asymmetric search)
+    t0 = time.time()
     embedding_text = intent_to_embedding_text(intent, query_text)
     query_vector = _embed_with_retry(embedding_text)
+    logger.info("TIMING | embedding: %.2fs", time.time() - t0)
 
-    # Vector search + dedup by series + content filter
+    t0 = time.time()
     allow_explicit = _query_wants_explicit(query_text)
     candidates = vector_search(db, query_vector, exclude_ids=exclude_ids, limit=limit * 3)
+    logger.info("TIMING | vector_search: %.2fs", time.time() - t0)
+
+    t0 = time.time()
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
+    logger.info("TIMING | dedup_filter: %.2fs", time.time() - t0)
 
-    # Generate explanations in parallel
-    return await _generate_explanations_batch(query_text, candidates, limit)
+    results = await _generate_explanations_batch(query_text, candidates, limit)
+    logger.info("TIMING | total: %.2fs", time.time() - t_total)
+    return results
 
 
 async def search_candidates(
@@ -475,21 +477,111 @@ async def search_candidates(
     """
     Phase 1 of streaming search: parse intent, embed, vector search, dedup, filter.
     Returns (candidates, query_text) — no explanations yet.
+    Logs TIMING breakpoints at INFO level.
     """
+    t_total = time.time()
+
+    t0 = time.time()
     intent = await parse_nl_query(query_text)
+    logger.info("TIMING | intent_parse: %.2fs", time.time() - t0)
 
     referenced_titles = intent.get("referenced_titles") or []
+    t0 = time.time()
     exclude_ids = _resolve_referenced_ids(db, referenced_titles) if referenced_titles else []
+    if referenced_titles:
+        logger.info("TIMING | title_extraction (DB lookup): %.2fs for %d titles", time.time() - t0, len(referenced_titles))
 
+    t0 = time.time()
     embedding_text = intent_to_embedding_text(intent, query_text)
     query_vector = _embed_with_retry(embedding_text)
+    logger.info("TIMING | embedding: %.2fs", time.time() - t0)
 
+    t0 = time.time()
     allow_explicit = _query_wants_explicit(query_text)
     candidates = vector_search(db, query_vector, exclude_ids=exclude_ids, limit=limit * 3)
+    logger.info("TIMING | vector_search: %.2fs (%d raw results)", time.time() - t0, len(candidates))
+
+    t0 = time.time()
     candidates = deduplicate_by_series(candidates, db=db)
     candidates = _filter_by_content(candidates, allow_explicit=allow_explicit)
+    logger.info("TIMING | dedup_filter: %.2fs (%d after dedup)", time.time() - t0, len(candidates))
 
-    return candidates[:limit + 5], query_text
+    logger.info("TIMING | search_candidates total: %.2fs", time.time() - t_total)
+    return candidates[:6], query_text  # cap at 6 — explanation gen is the bottleneck
+
+
+async def _explain_one(
+    query_label: str,
+    anime: Anime,
+    narrative: AnimeNarrative,
+    score: float,
+    queue: asyncio.Queue,
+) -> None:
+    """Generate explanation for a single anime with Haiku and put result in queue."""
+    themes_str = ", ".join((narrative.themes or [])[:4])
+    summary = (narrative.narrative_summary or "")[:250]
+    title = anime.title_romaji
+    if anime.title_english:
+        title += f" ({anime.title_english})"
+
+    prompt = f"""Request: "{query_label}"
+
+Anime (id={anime.id}): {title}
+- Archetype/Growth: {narrative.protagonist_archetype}, {narrative.growth_type}
+- Tone: {narrative.tone} | Conflict: {narrative.conflict_type}
+- Themes: {themes_str}
+- Summary: {summary}
+
+Return JSON: {{"anime_id": {anime.id}, "explanation": <1-2 sentences>, "reasons": [<3 bullets max 12 words>], "match_confidence": <0.0-1.0>}}"""
+
+    try:
+        message = await haiku_client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=200,
+            system=EXPLANATION_SYSTEM,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        data = json.loads(raw.strip())
+        await queue.put({
+            "anime_id": anime.id,
+            "explanation": data.get("explanation", ""),
+            "match_reasons": data.get("reasons", []),
+            "match_confidence": float(data.get("match_confidence", 0.7)),
+        })
+    except Exception as exc:
+        logger.warning("Haiku explanation failed for %s: %s", anime.title_romaji, exc)
+        await queue.put({
+            "anime_id": anime.id,
+            "explanation": f"Matches your request with {score:.0%} narrative similarity.",
+            "match_reasons": [
+                f"Protagonist: {narrative.protagonist_archetype}",
+                f"Growth: {narrative.growth_type}",
+                f"Tone: {narrative.tone}",
+            ],
+            "match_confidence": 0.7,
+        })
+
+
+async def generate_explanations_stream(
+    query_label: str,
+    candidates: list[tuple[Anime, AnimeNarrative, float]],
+) -> asyncio.Queue:
+    """
+    Fire parallel Haiku calls for each anime. Returns a queue that receives
+    explanation dicts as each one completes. Caller drains queue by len(candidates).
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    tasks = [
+        _explain_one(query_label, anime, narrative, score, queue)
+        for anime, narrative, score in candidates
+    ]
+    asyncio.gather(*tasks)  # fire and forget — results go to queue
+    return queue
 
 
 async def generate_explanations_for_candidates(
@@ -497,8 +589,8 @@ async def generate_explanations_for_candidates(
     candidates: list[tuple[Anime, AnimeNarrative, float]],
 ) -> dict[int, dict]:
     """
-    Phase 2 of streaming search: batch Claude call, returns {anime_id: explanation_dict}.
-    On failure returns empty dict (caller should handle missing explanations).
+    Batch Haiku call for all candidates at once. Returns {anime_id: explanation_dict}.
+    Used by non-streaming path. On failure returns empty dict.
     """
     if not candidates:
         return {}
@@ -508,29 +600,21 @@ async def generate_explanations_for_candidates(
         for i, (anime, narrative, _) in enumerate(candidates)
     )
 
-    prompt = f"""Given this request: "{query_label}"
-
-Here are the matched anime. For EACH one, explain why it matches the request.
+    prompt = f"""Request: "{query_label}"
 
 {anime_blocks}
 
-Return a JSON array with one object per anime, in the same order:
-[
-  {{
-    "anime_id": <the anime id>,
-    "explanation": <1-2 sentence explanation of why this matches the request>,
-    "reasons": [<3-4 specific bullet-point reasons, each under 15 words>],
-    "match_confidence": <float 0.0-1.0, how well this anime actually fits the request. Use 0.0-0.4 for poor matches, 0.5-0.7 for decent, 0.8-1.0 for strong>
-  }}
-]"""
+Return JSON array: [{{"anime_id": <id>, "explanation": <1-2 sentences>, "reasons": [<3 bullets max 12 words>], "match_confidence": <0.0-1.0>}}]"""
 
     try:
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300 * len(candidates),
+        t0 = time.time()
+        message = await haiku_client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=200 * len(candidates),
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}]
         )
+        logger.info("TIMING | explanation_gen (batch): %.2fs", time.time() - t0)
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
